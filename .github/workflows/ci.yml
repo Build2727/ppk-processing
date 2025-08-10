@@ -16,11 +16,13 @@ jobs:
         with:
           python-version: "3.10"
 
-      - name: Install dependencies
+      # Minimal install so CI is fast & reliable
+      - name: Install streamlit only
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install streamlit
 
+      # Compile *.py to catch syntax errors (no imports executed)
       - name: Syntax check (py_compile)
         run: |
           python - << "PY"
@@ -35,8 +37,8 @@ jobs:
               except Exception as e:
                   bad.append((f, e))
           if bad:
-              print("Syntax errors in:"); 
-              for f,e in bad: print(f" - {f}: {e}")
+              print("Syntax errors in:")
+              for f,e in bad: print(f" -", f, ":", e)
               sys.exit(1)
           print("Syntax OK")
           PY
