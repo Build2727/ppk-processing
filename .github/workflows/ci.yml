@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ dev, main ]
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      # Minimal install so CI is fast & reliable
+      - name: Install streamlit only
+        run: |
+          python -m pip install --upgrade pip
+          pip install streamlit
+
+      # Compile *.py to catch syntax errors (no imports executed)
+      - name: Syntax check (py_compile)
+        run: |
+          python - << "PY"
+          import subprocess, sys, py_compile
+          files = subprocess.check_output(["git","ls-files","*.py"], text=True).strip().splitlines()
+          if not files:
+              print("No Python files to check."); sys.exit(0)
+          bad = []
+          for f in files:
+              try:
+                  py_compile.compile(f, doraise=True)
+              except Exception as e:
+                  bad.append((f, e))
+          if bad:
+              print("Syntax errors in:")
+              for f,e in bad: print(f" -", f, ":", e)
+              sys.exit(1)
+          print("Syntax OK")
+          PY
+
+      - name: Streamlit import smoke test
+        run: python -c "import streamlit; print('streamlit OK')"
