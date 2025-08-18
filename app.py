@@ -166,13 +166,13 @@ def parse_rtklib_pos(pos_path: str) -> pd.DataFrame:
 def parse_events_no_headers(file_path: str) -> pd.DataFrame:
     """
     Parse events TXT/CSV with NO headers.
-    Columns (we use 1..9):
+    Columns we use (1..9):
       1: Image
       2: GPS TOW (s)
       3: GPS week
-      4: meters to LATITUDE   (subtract after converting to degrees)
-      5: meters to LONGITUDE  (subtract after converting to degrees)
-      6: meters to ALTITUDE   (subtract)
+      4: North offset (m)   -> antenna is N of camera by this many meters
+      5: West  offset (m)   -> antenna is W of camera by this many meters
+      6: Alt   offset (m)   -> antenna is above camera by this many meters
       7: Roll (deg)
       8: Pitch (deg)
       9: Yaw (deg)
@@ -192,42 +192,46 @@ def parse_events_no_headers(file_path: str) -> pd.DataFrame:
         try:
             tow = float(parts[1])
             week = int(float(parts[2]))
-            lat_m = float(parts[3])  # meters to latitude
-            lon_m = float(parts[4])  # meters to longitude
-            alt_m = float(parts[5])  # meters to altitude
+            n_m  = float(parts[3])  # North offset (m)
+            w_m  = float(parts[4])  # West  offset (m)
+            alt_m= float(parts[5])  # Alt   offset (m)
             roll = float(parts[6]); pitch = float(parts[7]); yaw = float(parts[8])
         except Exception:
             continue
-        recs.append((img, week, tow, lat_m, lon_m, alt_m, roll, pitch, yaw))
+        recs.append((img, week, tow, n_m, w_m, alt_m, roll, pitch, yaw))
 
     return pd.DataFrame(
         recs,
-        columns=["image", "gps_week", "gps_tow_s", "Lat_m", "Lon_m", "Alt_m",
+        columns=["image", "gps_week", "gps_tow_s", "N_m", "W_m", "Alt_m",
                  "Roll_deg", "Pitch_deg", "Yaw_deg"]
     )
 
-def apply_meter_offsets_subtract(lat_deg: float, lon_deg: float, h_m: float,
-                                 lat_m: float, lon_m: float, alt_m: float) -> Tuple[float, float, float]:
+def apply_offsets_north_west_subtract(lat_deg: float, lon_deg: float, h_m: float,
+                                      n_m: float, w_m: float, alt_m: float) -> Tuple[float, float, float]:
     """
-    Interpret columns 4,5,6 as meters to latitude/longitude/altitude, and SUBTRACT them.
-    Lat/Lon meters are converted to degrees using local latitude.
+    Convert antenna position to camera position given North/West/Alt offsets of the antenna
+    relative to the camera (positive = antenna is N/W/above camera).
+    Camera = Antenna moved SOUTH by N, EAST by W, DOWN by Alt.
     """
-    R = 6378137.0  # WGS84 mean radius (m)
+    R = 6378137.0  # mean Earth radius
     lat_rad = math.radians(lat_deg)
+    coslat = max(1e-12, abs(math.cos(lat_rad)))  # guard near poles
 
-    dlat_deg = (lat_m / R) * (180.0 / math.pi)
-    # Guard cos(lat) near poles
-    coslat = max(1e-12, abs(math.cos(lat_rad)))
-    dlon_deg = (lon_m / (R * coslat)) * (180.0 / math.pi)
+    # meters -> degrees
+    dlat_deg = (n_m / R) * (180.0 / math.pi)             # move south by N -> latitude decreases
+    dlon_deg = (w_m / (R * coslat)) * (180.0 / math.pi)  # move east  by W -> longitude increases
 
-    return lat_deg - dlat_deg, lon_deg - dlon_deg, h_m - alt_m
+    lat_cam = lat_deg - dlat_deg
+    lon_cam = lon_deg + dlon_deg
+    h_cam   = h_m - alt_m
+    return lat_cam, lon_cam, h_cam
 
 def match_events_to_pos(pos_df: pd.DataFrame,
                         events_df: pd.DataFrame,
                         tol_s: float = 2.0) -> pd.DataFrame:
     """
     For each event (week,tow), find nearest pos epoch with same week and |dt|<=tol_s.
-    Apply SUBTRACTIVE meter offsets to lat/lon/alt (lat/lon meters converted to degrees).
+    Convert antenna → camera using North/West/Alt offsets (meters), with lat/lon meters → degrees.
     Output columns for EXIF CSV:
       Img, Lat, Long, Alt, Yaw, Pitch, Roll, X acc, Y acc, Z acc
     """
@@ -265,11 +269,11 @@ def match_events_to_pos(pos_df: pd.DataFrame,
 
             base_lat = lat_pos[best]; base_lon = lon_pos[best]; base_h = hgt_pos[best]
 
-            adj_lat, adj_lon, adj_h = apply_meter_offsets_subtract(
+            adj_lat, adj_lon, adj_h = apply_offsets_north_west_subtract(
                 base_lat, base_lon, base_h,
-                ev["Lat_m"],  # meters to latitude
-                ev["Lon_m"],  # meters to longitude
-                ev["Alt_m"],  # meters to altitude
+                ev["N_m"],  # North offset (m)  -> subtract from latitude (south)
+                ev["W_m"],  # West  offset (m)  -> add to longitude (east)
+                ev["Alt_m"] # Alt   offset (m)  -> subtract from altitude (down)
             )
 
             out_rows.append([
@@ -287,7 +291,11 @@ def match_events_to_pos(pos_df: pd.DataFrame,
 # UI
 # ------------------------------
 st.title("Jamie D PPK Processor")
-st.caption("PPK solve (RTKLIB rnx2rtkp) → event matching → subtractive meter offsets (lat/lon converted to degrees) → EXIF CSV (Yaw, Pitch, Roll)")
+st.caption(
+    "PPK solve (RTKLIB rnx2rtkp) → event match → antenna→camera offsets "
+    "(North/West/Alt: move south/east/down; lat/lon meters converted to degrees) "
+    "→ EXIF CSV (Yaw, Pitch, Roll)"
+)
 
 colL, colR = st.columns(2)
 
@@ -322,10 +330,10 @@ with colL:
 with colR:
     st.subheader("Events (optional, TXT/CSV)")
     st.caption(
-        "Rows: Image, TOW(s), GPS week, "
-        "Lat-offset(m), Lon-offset(m), Alt-offset(m), "
+        "Rows: Image, TOW(s), GPS week, North(m), West(m), Alt(m), "
         "Roll(deg), Pitch(deg), Yaw(deg). "
-        "Offsets are **SUBTRACTED** (lat/lon meters converted to degrees)."
+        "Offsets describe ANTENNA relative to CAMERA (N/W/above). "
+        "App converts antenna→camera by moving south by North(m), east by West(m), down by Alt(m)."
     )
     events_up = st.file_uploader(
         "Drag & drop events file (no headers required)",
@@ -399,10 +407,10 @@ if run_clicked:
 # If we have both, allow building the EXIF CSV
 if not st.session_state["pos_df"].empty and not st.session_state["events_df"].empty:
     st.markdown("---")
-    st.subheader("Build EXIF CSV from matched PPK + Events (meters → degrees where needed, then SUBTRACTED)")
+    st.subheader("Build EXIF CSV (antenna→camera: south/east/down; lat/lon meters→degrees)")
 
     tol = st.slider("Time matching tolerance (seconds)", 0.1, 5.0, 2.0, 0.1,
-                    help="Max allowed |TOW(event)-TOW(.pos)| for same GPS week.")
+                    help="Max allowed |TOW(event)-TOW(.pos)| for the same GPS week.")
 
     out_df = match_events_to_pos(st.session_state["pos_df"], st.session_state["events_df"], tol_s=tol)
 
@@ -424,3 +432,4 @@ else:
         st.info("Run PPK first to create a .pos.")
     elif st.session_state["events_df"].empty:
         st.info("Upload an events file to produce the EXIF CSV.")
+
