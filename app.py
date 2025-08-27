@@ -70,6 +70,75 @@ if not _rnx_ok:
                        "or bundle a Linux binary at bin/rnx2rtkp.")
 
 # ------------------------------
+# Geodesy helpers (WGS84)
+# ------------------------------
+WGS84_A = 6378137.0
+WGS84_F = 1.0 / 298.257223563
+WGS84_E2 = WGS84_F * (2.0 - WGS84_F)
+
+def geodetic_to_ecef(lat_deg: float, lon_deg: float, h_m: float):
+    lat = math.radians(lat_deg)
+    lon = math.radians(lon_deg)
+    sin_lat = math.sin(lat)
+    cos_lat = math.cos(lat)
+    sin_lon = math.sin(lon)
+    cos_lon = math.cos(lon)
+
+    N = WGS84_A / math.sqrt(1.0 - WGS84_E2 * sin_lat * sin_lat)
+    X = (N + h_m) * cos_lat * cos_lon
+    Y = (N + h_m) * cos_lat * sin_lon
+    Z = (N * (1.0 - WGS84_E2) + h_m) * sin_lat
+    return X, Y, Z
+
+def ecef_to_geodetic(X: float, Y: float, Z: float):
+    # Bowring-like iterative solution on latitude
+    lon = math.atan2(Y, X)
+    p = math.hypot(X, Y)
+    lat = math.atan2(Z, p * (1.0 - WGS84_E2))
+    for _ in range(8):
+        sin_lat = math.sin(lat)
+        N = WGS84_A / math.sqrt(1.0 - WGS84_E2 * sin_lat * sin_lat)
+        h = p / math.cos(lat) - N
+        lat_new = math.atan2(Z, p * (1.0 - WGS84_E2 * (N / (N + h))))
+        if abs(lat_new - lat) < 1e-13:
+            lat = lat_new
+            break
+        lat = lat_new
+    sin_lat = math.sin(lat)
+    N = WGS84_A / math.sqrt(1.0 - WGS84_E2 * sin_lat * sin_lat)
+    h = p / math.cos(lat) - N
+    return math.degrees(lat), math.degrees(lon), h
+
+def enu_basis(lat_deg: float, lon_deg: float):
+    """Return unit vectors (in ECEF) for local East, North, Up at (lat,lon)."""
+    lat = math.radians(lat_deg)
+    lon = math.radians(lon_deg)
+    sL = math.sin(lat); cL = math.cos(lat)
+    sO = math.sin(lon); cO = math.cos(lon)
+    e = (-sO, cO, 0.0)
+    n = (-sL * cO, -sL * sO, cL)
+    u = (cL * cO, cL * sO, sL)
+    return e, n, u
+
+def add_vec(a, b):
+    return (a[0]+b[0], a[1]+b[1], a[2]+b[2])
+
+def scale_vec(v, s):
+    return (v[0]*s, v[1]*s, v[2]*s)
+
+def apply_offsets_via_ecef(lat_deg: float, lon_deg: float, h_m: float,
+                           dN_m: float, dE_m: float, dU_m: float):
+    """
+    Apply ENU vector [dE, dN, dU] (meters) at APC to get camera center using ECEF math.
+    Returns camera (lat, lon, h).
+    """
+    X, Y, Z = geodetic_to_ecef(lat_deg, lon_deg, h_m)
+    e, n, u = enu_basis(lat_deg, lon_deg)
+    d_ecef = add_vec(add_vec(scale_vec(e, dE_m), scale_vec(n, dN_m)), scale_vec(u, dU_m))
+    Xc, Yc, Zc = add_vec((X, Y, Z), d_ecef)
+    return ecef_to_geodetic(Xc, Yc, Zc)
+
+# ------------------------------
 # Helpers
 # ------------------------------
 def save_upload_to_tmp(upload, suffix: str = "") -> str:
@@ -165,17 +234,17 @@ def parse_rtklib_pos(pos_path: str) -> pd.DataFrame:
 
 def parse_events_no_headers(file_path: str) -> pd.DataFrame:
     """
-    Parse events TXT/CSV with NO headers.
-    Columns we use (1..9):
+    Parse events TXT/CSV with NO headers. **Assumes meters**.
+    Columns used (1..9):
       1: Image
       2: GPS TOW (s)
       3: GPS week
-      4: North offset (m)   -> antenna is N of camera by this many meters
-      5: West  offset (m)   -> antenna is W of camera by this many meters
-      6: Alt   offset (m)   -> antenna is above camera by this many meters
+      4: North offset (m)   -> antenna is NORTH of camera by this many meters
+      5: West  offset (m)   -> antenna is WEST  of camera by this many meters
+      6: Alt   offset (m)   -> antenna is ABOVE camera by this many meters
       7: Roll (deg)
       8: Pitch (deg)
-      9: Yaw (deg)
+      9: Yaw  (deg)
     """
     if not os.path.exists(file_path):
         return pd.DataFrame()
@@ -192,46 +261,26 @@ def parse_events_no_headers(file_path: str) -> pd.DataFrame:
         try:
             tow = float(parts[1])
             week = int(float(parts[2]))
-            n_m  = float(parts[3])  # North offset (m)
-            w_m  = float(parts[4])  # West  offset (m)
-            alt_m= float(parts[5])  # Alt   offset (m)
+            north_m = float(parts[3])
+            west_m  = float(parts[4])
+            alt_m   = float(parts[5])
             roll = float(parts[6]); pitch = float(parts[7]); yaw = float(parts[8])
         except Exception:
             continue
-        recs.append((img, week, tow, n_m, w_m, alt_m, roll, pitch, yaw))
+        recs.append((img, week, tow, north_m, west_m, alt_m, roll, pitch, yaw))
 
     return pd.DataFrame(
         recs,
-        columns=["image", "gps_week", "gps_tow_s", "N_m", "W_m", "Alt_m",
+        columns=["image", "gps_week", "gps_tow_s", "North_m", "West_m", "Alt_m",
                  "Roll_deg", "Pitch_deg", "Yaw_deg"]
     )
-
-def apply_offsets_north_west_subtract(lat_deg: float, lon_deg: float, h_m: float,
-                                      n_m: float, w_m: float, alt_m: float) -> Tuple[float, float, float]:
-    """
-    Convert antenna position to camera position given North/West/Alt offsets of the antenna
-    relative to the camera (positive = antenna is N/W/above camera).
-    Camera = Antenna moved SOUTH by N, EAST by W, DOWN by Alt.
-    """
-    R = 6378137.0  # mean Earth radius
-    lat_rad = math.radians(lat_deg)
-    coslat = max(1e-12, abs(math.cos(lat_rad)))  # guard near poles
-
-    # meters -> degrees
-    dlat_deg = (n_m / R) * (180.0 / math.pi)             # move south by N -> latitude decreases
-    dlon_deg = (w_m / (R * coslat)) * (180.0 / math.pi)  # move east  by W -> longitude increases
-
-    lat_cam = lat_deg - dlat_deg
-    lon_cam = lon_deg + dlon_deg
-    h_cam   = h_m - alt_m
-    return lat_cam, lon_cam, h_cam
 
 def match_events_to_pos(pos_df: pd.DataFrame,
                         events_df: pd.DataFrame,
                         tol_s: float = 2.0) -> pd.DataFrame:
     """
     For each event (week,tow), find nearest pos epoch with same week and |dt|<=tol_s.
-    Convert antenna → camera using North/West/Alt offsets (meters), with lat/lon meters → degrees.
+    Convert APC (antenna) → CAMERA using ENU/ECEF with per-event offsets.
     Output columns for EXIF CSV:
       Img, Lat, Long, Alt, Yaw, Pitch, Roll, X acc, Y acc, Z acc
     """
@@ -267,14 +316,22 @@ def match_events_to_pos(pos_df: pd.DataFrame,
             if best is None or (best_dt is not None and best_dt > tol_s):
                 continue
 
-            base_lat = lat_pos[best]; base_lon = lon_pos[best]; base_h = hgt_pos[best]
+            base_lat = float(lat_pos[best])
+            base_lon = float(lon_pos[best])
+            base_h   = float(hgt_pos[best])
 
-            adj_lat, adj_lon, adj_h = apply_offsets_north_west_subtract(
-                base_lat, base_lon, base_h,
-                ev["N_m"],  # North offset (m)  -> subtract from latitude (south)
-                ev["W_m"],  # West  offset (m)  -> add to longitude (east)
-                ev["Alt_m"] # Alt   offset (m)  -> subtract from altitude (down)
-            )
+            # We are given OFFSETS IN METERS describing ANTENNA relative to CAMERA.
+            # To move from Antenna(APC) -> Camera:
+            #   camera = antenna + [dE, dN, dU] where
+            #   dN = -North, dE = +West (west is negative east), dU = -Alt
+            north_m = float(ev["North_m"])
+            west_m  = float(ev["West_m"])
+            alt_m   = float(ev["Alt_m"])
+            dN = -north_m
+            dE = +west_m
+            dU = -alt_m
+
+            adj_lat, adj_lon, adj_h = apply_offsets_via_ecef(base_lat, base_lon, base_h, dN, dE, dU)
 
             out_rows.append([
                 ev["image"], adj_lat, adj_lon, adj_h,
@@ -292,9 +349,8 @@ def match_events_to_pos(pos_df: pd.DataFrame,
 # ------------------------------
 st.title("Jamie D PPK Processor")
 st.caption(
-    "PPK solve (RTKLIB rnx2rtkp) → event match → antenna→camera offsets "
-    "(North/West/Alt: move south/east/down; lat/lon meters converted to degrees) "
-    "→ EXIF CSV (Yaw, Pitch, Roll)"
+    "PPK solve (RTKLIB rnx2rtkp) → time match → APC→Camera using ENU→ECEF (per-event N/W/Alt meters) "
+    "→ EXIF CSV (Yaw, Pitch, Roll)."
 )
 
 colL, colR = st.columns(2)
@@ -328,15 +384,15 @@ with colL:
         st.write(f"**Loaded:** `{base_nav_up.name}`")
 
 with colR:
-    st.subheader("Events (optional, TXT/CSV)")
+    st.subheader("Events (TXT/CSV, meters)")
     st.caption(
-        "Rows: Image, TOW(s), GPS week, North(m), West(m), Alt(m), "
+        "No headers. Columns: Image, TOW(s), GPS week, **North(m)**, **West(m)**, **Alt(m)**, "
         "Roll(deg), Pitch(deg), Yaw(deg). "
-        "Offsets describe ANTENNA relative to CAMERA (N/W/above). "
-        "App converts antenna→camera by moving south by North(m), east by West(m), down by Alt(m)."
+        "Offsets describe the **ANTENNA relative to the CAMERA** (N/W/above). "
+        "App computes CAMERA = APC + [dE, dN, dU] with dN=−North, dE=+West, dU=−Alt using ENU→ECEF."
     )
     events_up = st.file_uploader(
-        "Drag & drop events file (no headers required)",
+        "Drag & drop events file (meters)",
         type=["txt", "csv"]
     )
     if events_up:
@@ -407,7 +463,7 @@ if run_clicked:
 # If we have both, allow building the EXIF CSV
 if not st.session_state["pos_df"].empty and not st.session_state["events_df"].empty:
     st.markdown("---")
-    st.subheader("Build EXIF CSV (antenna→camera: south/east/down; lat/lon meters→degrees)")
+    st.subheader("Build EXIF CSV (APC→Camera via ENU→ECEF; per-event offsets)")
 
     tol = st.slider("Time matching tolerance (seconds)", 0.1, 5.0, 2.0, 0.1,
                     help="Max allowed |TOW(event)-TOW(.pos)| for the same GPS week.")
@@ -432,4 +488,3 @@ else:
         st.info("Run PPK first to create a .pos.")
     elif st.session_state["events_df"].empty:
         st.info("Upload an events file to produce the EXIF CSV.")
-
