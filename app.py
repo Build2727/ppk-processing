@@ -176,16 +176,16 @@ def parse_rtklib_pos(pos_path: str) -> pd.DataFrame:
             lat_idx = lon_idx = hgt_idx = None
             for i in range(len(parts) - 2):
                 try:
-                    v = float(parts[i]); v2 = float(parts[i+1]); v3 = float(parts[i+2])
+                    v = float(parts[i]); v2 = float(parts[i + 1]); v3 = float(parts[i + 2])
                 except Exception:
                     continue
                 if -90 <= v <= 90 and -180 <= v2 <= 180:
-                    lat_idx, lon_idx, hgt_idx = i, i+1, i+2
+                    lat_idx, lon_idx, hgt_idx = i, i + 1, i + 2
                     break
             week = tow = None
             for i in range(min(4, len(parts) - 1)):
                 try:
-                    w = int(float(parts[i])); t = float(parts[i+1])
+                    w = int(float(parts[i])); t = float(parts[i + 1])
                     if 800 <= w <= 4000 and 0 <= t < 700000:
                         week, tow = w, t
                         break
@@ -242,17 +242,24 @@ def parse_events_no_headers(file_path: str) -> pd.DataFrame:
 st.title("Jamie D PPK Processor")
 st.caption("PPK (RTKLIB rnx2rtkp) → time match → ENU→ECEF per-event offsets → EXIF CSV (Yaw, Pitch, Roll)")
 
-with st.expander("Offset convention & notes", expanded=False):
+with st.expander("Offset convention & timing", expanded=False):
     st.markdown(
         "- **Offsets file (meters):** `Image, TOW(s), GPS week, North(m), East(m), Up(m), Roll, Pitch, Yaw`  \n"
-        "- If your offsets describe **APC relative to Camera** (antenna is N/E/U of camera), "
-        "**check** the box below (default). We will compute **Camera = APC − [N,E,U]**.  \n"
-        "- If your offsets describe **Camera relative to APC**, **uncheck** it and we will **add** instead."
+        "- **Meaning:** If offsets describe **APC relative to Camera** (antenna is N/E/U of camera), "
+        "leave the box checked (default). We compute **Camera = APC − [N,E,U]**.  \n"
+        "- If offsets describe **Camera relative to APC**, uncheck it and we compute **Camera = APC + [N,E,U]**.  \n"
+        "- **Exposure delay:** If GNSS timestamp is earlier than exposure, set a positive delay."
     )
 
 subtract_mode = st.checkbox(
     "Offsets describe **APC relative to Camera** (subtract: Camera = APC − [N,E,U])",
     value=True
+)
+
+exp_delay = st.number_input(
+    "Global exposure delay (seconds, applied to event time before matching)",
+    value=0.062, step=0.001, format="%.3f",
+    help="Positive = shutter fires AFTER logged time. Example: 0.062 means +62 ms."
 )
 
 colL, colR = st.columns(2)
@@ -296,15 +303,18 @@ if "events_df" not in st.session_state:    st.session_state["events_df"] = pd.Da
 def match_events_to_pos(pos_df: pd.DataFrame,
                         events_df: pd.DataFrame,
                         tol_s: float = 2.0,
-                        subtract_mode: bool = True) -> pd.DataFrame:
+                        subtract_mode: bool = True,
+                        delay_s: float = 0.0) -> pd.DataFrame:
     """
     For each event (week,tow), find nearest pos epoch with same week and |dt|<=tol_s.
-    Convert APC -> Camera using ENU/ECEF with per-event offsets.
-    Output columns: Img, Lat, Long, Alt, Yaw, Pitch, Roll, X acc, Y acc, Z acc, Δt_s, offset_mode
+    Convert APC -> Camera using ENU/ECEF with per-event offsets and apply a global exposure delay.
+    Output: Img, Lat, Long, Alt, Yaw, Pitch, Roll, X acc, Y acc, Z acc, Δt_s, offset_mode, delay_s
     """
     if pos_df.empty or events_df.empty:
-        return pd.DataFrame(columns=["Img", "Lat", "Long", "Alt", "Yaw", "Pitch", "Roll",
-                                     "X acc", "Y acc", "Z acc", "Δt_s", "offset_mode"])
+        return pd.DataFrame(columns=[
+            "Img", "Lat", "Long", "Alt", "Yaw", "Pitch", "Roll",
+            "X acc", "Y acc", "Z acc", "Δt_s", "offset_mode", "delay_s"
+        ])
 
     out_rows = []
     for wk in sorted(events_df["gps_week"].unique()):
@@ -318,22 +328,23 @@ def match_events_to_pos(pos_df: pd.DataFrame,
 
         events_w = events_df[events_df["gps_week"] == wk]
         for _, ev in events_w.iterrows():
-            tow = float(ev["gps_tow_s"])
-            idx = np.searchsorted(tow_pos, tow)
+            tow_event = float(ev["gps_tow_s"]) + float(delay_s)  # apply global exposure delay
+
+            idx = np.searchsorted(tow_pos, tow_event)
             cand = []
             if 0 <= idx < len(tow_pos): cand.append(idx)
             if idx - 1 >= 0:            cand.append(idx - 1)
 
             best = None; best_dt = None
             for ci in cand:
-                dt = abs(tow_pos[ci] - tow)
+                dt = abs(tow_pos[ci] - tow_event)
                 if best_dt is None or dt < best_dt:
                     best_dt = dt; best = ci
             if best is None or (best_dt is not None and best_dt > tol_s):
                 continue
 
             base_lat = float(lat_pos[best]); base_lon = float(lon_pos[best]); base_h = float(hgt_pos[best])
-            delta_t = float(tow_pos[best] - tow)  # signed, for inspection
+            delta_t = float(tow_pos[best] - tow_event)  # signed difference after delay
 
             # Offsets are N/E/U in meters per event
             n = float(ev["North_m"]); e = float(ev["East_m"]); u = float(ev["Up_m"])
@@ -341,7 +352,7 @@ def match_events_to_pos(pos_df: pd.DataFrame,
                 dN, dE, dU = -n, -e, -u  # APC -> Camera = subtract if APC relative to camera
                 mode_label = "subtract (APC rel. Camera)"
             else:
-                dN, dE, dU = +n, +e, +u  # Camera rel. APC
+                dN, dE, dU = +n, +e, +u  # Camera relative to APC
                 mode_label = "add (Camera rel. APC)"
 
             adj_lat, adj_lon, adj_h = apply_offsets_via_ecef(base_lat, base_lon, base_h, dN, dE, dU)
@@ -350,12 +361,12 @@ def match_events_to_pos(pos_df: pd.DataFrame,
                 ev["image"], adj_lat, adj_lon, adj_h,
                 ev["Yaw_deg"], ev["Pitch_deg"], ev["Roll_deg"],
                 0.02, 0.02, 0.03,
-                delta_t, mode_label
+                delta_t, mode_label, float(delay_s)
             ])
 
     return pd.DataFrame(out_rows, columns=[
         "Img", "Lat", "Long", "Alt", "Yaw", "Pitch", "Roll",
-        "X acc", "Y acc", "Z acc", "Δt_s", "offset_mode"
+        "X acc", "Y acc", "Z acc", "Δt_s", "offset_mode", "delay_s"
     ])
 
 if run_clicked:
@@ -398,11 +409,16 @@ if run_clicked:
 # If we have both, allow building the EXIF CSV
 if not st.session_state["pos_df"].empty and not st.session_state["events_df"].empty:
     st.markdown("---")
-    st.subheader("Build EXIF CSV (ENU→ECEF per-event offsets)")
+    st.subheader("Build EXIF CSV (ENU→ECEF per-event offsets; exposure delay applied)")
     tol = st.slider("Time matching tolerance (seconds)", 0.1, 5.0, 2.0, 0.1,
-                    help="Max allowed |TOW(event)-TOW(.pos)| for same GPS week.")
-    out_df = match_events_to_pos(st.session_state["pos_df"], st.session_state["events_df"],
-                                 tol_s=tol, subtract_mode=subtract_mode)
+                    help="Max allowed |TOW(event_corrected)-TOW(.pos)| for same GPS week.")
+    out_df = match_events_to_pos(
+        st.session_state["pos_df"],
+        st.session_state["events_df"],
+        tol_s=tol,
+        subtract_mode=subtract_mode,
+        delay_s=exp_delay
+    )
     if out_df.empty:
         st.warning("No matches within tolerance. Try increasing the tolerance.")
     else:
