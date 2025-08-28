@@ -1,10 +1,7 @@
 venv/
+_backups*/
+.devcontainer/
+Dockerfile
+bin/
 __pycache__/
 *.pyc
-.DS_Store
-.env
-.streamlit/
-_backups*/
-_backups*/
-
-bin/rnx2rtkp
