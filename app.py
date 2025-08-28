@@ -214,7 +214,7 @@ def nearest_idx(times: np.ndarray, target: datetime) -> int:
 # =========================
 # Streamlit UI
 # =========================
-st.set_page_config(page_title="PPK Processing with RTKLIB", layout="wide")
+st.set_page_config(page_title="PPK with RTKLIB", layout="wide")
 st.title("PPK Processing (RTKLIB) — Camera positions")
 
 st.sidebar.header("Inputs")
