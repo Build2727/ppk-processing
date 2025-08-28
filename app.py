@@ -345,3 +345,13 @@ else:
     st.write("Upload files in the sidebar and click **Run PPK + Build CSV**.")
     st.caption("On Streamlit Cloud the system RTKLIB (`rnx2rtkp`) is installed via `packages.txt` (apt: rtklib).")
 
+Commit
+
+
+jamie@Home27:~/ppk-processing$ cd ~/ppk-processing
+git add app.py
+git commit -m "Update app.py with RINEX filters + wide UI"
+git push origin main
+[main 6740910] Update app.py with RINEX filters + wide UI
+ 1 file changed, 89 insertions(+), 146 deletions(-)
+
