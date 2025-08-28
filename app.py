@@ -218,9 +218,9 @@ st.set_page_config(page_title="PPK with RTKLIB", layout="wide")
 st.title("PPK Processing (RTKLIB) — Camera positions")
 
 st.sidebar.header("Inputs")
-rov_up = st.sidebar.file_uploader("Rover RINEX OBS", type=["obs","OBS","rnx","o"])
-base_up = st.sidebar.file_uploader("Base RINEX OBS (or VRS)", type=["obs","OBS","rnx","o"])
-nav_up = st.sidebar.file_uploader("RINEX NAV (e.g., .nav/.n)", type=["nav","NAV","n"])
+rov_up = st.sidebar.file_uploader("Rover RINEX OBS", type=None)
+base_up = st.sidebar.file_uploader("Base RINEX OBS (or VRS)", type=None)
+nav_up = st.sidebar.file_uploader("RINEX NAV (e.g., .nav/.n)", type=None)
 events_up = st.sidebar.file_uploader("Events file (time, dN, dE, dU)", type=["txt","csv"])
 
 st.sidebar.header("Settings")
