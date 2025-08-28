@@ -1,3 +1,4 @@
 rtklib
 build-essential
 git
+ca-certificates
