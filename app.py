@@ -12,16 +12,12 @@ import pandas as pd
 import streamlit as st
 from datetime import datetime, timezone, timedelta
 
-# ----------------------
-# Time parsing utilities
-# ----------------------
 TIME_FORMATS = [
     "%Y/%m/%d %H:%M:%S.%f",
     "%Y/%m/%d %H:%M:%S",
     "%Y-%m-%d %H:%M:%S.%f",
     "%Y-%m-%d %H:%M:%S",
 ]
-
 def parse_timestr(s: str) -> Optional[datetime]:
     s = s.strip().replace(",", " ").replace("T", " ")
     for fmt in TIME_FORMATS:
@@ -31,9 +27,6 @@ def parse_timestr(s: str) -> Optional[datetime]:
             pass
     return None
 
-# ----------------------
-# Simple geodesy (WGS-84)
-# ----------------------
 A = 6378137.0
 F = 1.0 / 298.257223563
 B = A * (1 - F)
@@ -82,9 +75,6 @@ def apply_neu_offset(apc_lat, apc_lon, apc_h, dN, dE, dU, mode_add: bool) -> Tup
     cam_ecef = apc_ecef + (delta_ecef if mode_add else -delta_ecef)
     return ecef_to_geodetic(cam_ecef)
 
-# ----------------------
-# Data model
-# ----------------------
 @dataclass
 class Event:
     t: datetime
@@ -99,8 +89,8 @@ def is_floaty(x: str) -> bool:
     except Exception:
         return False
 
-def parse_events_file(upfile, delay_sec: float) -> List[Event]:
-    text = upfile.read().decode(errors="ignore").strip().splitlines()
+def parse_events_file(f, delay_sec: float) -> List[Event]:
+    text = f.read().decode(errors="ignore").strip().splitlines()
     out = []
     for line in text:
         if not line.strip():
@@ -110,21 +100,15 @@ def parse_events_file(upfile, delay_sec: float) -> List[Event]:
             t = parse_timestr(f"{toks[0]} {toks[1]}")
             rest = toks[2:]
             if t is None:
-                t = parse_timestr(toks[0])
-                rest = toks[1:]
+                t = parse_timestr(toks[0]); rest = toks[1:]
         else:
-            t = parse_timestr(toks[0])
-            rest = toks[1:]
+            t = parse_timestr(toks[0]); rest = toks[1:]
         if t is None:
-            joined = []
-            got = None
             for i in range(1, min(4, len(toks)) + 1):
                 joined = " ".join(toks[:i])
                 got = parse_timestr(joined)
                 if got is not None:
-                    t = got
-                    rest = toks[i:]
-                    break
+                    t = got; rest = toks[i:]; break
         if t is None:
             continue
         t = t + timedelta(seconds=delay_sec)
@@ -134,48 +118,39 @@ def parse_events_file(upfile, delay_sec: float) -> List[Event]:
         out.append(Event(t=t, dN=dN, dE=dE, dU=dU, raw=toks))
     return out
 
-# ----------------------
-# RTKLIB integration
-# ----------------------
 def find_rnx2rtkp() -> str:
+    candidate = "/usr/bin/rnx2rtkp"
+    if os.path.isfile(candidate):
+        return candidate
     p = shutil.which("rnx2rtkp")
     if p:
         return p
-    candidates = [
-        "/usr/bin/rnx2rtkp",
-        "/usr/local/bin/rnx2rtkp",
-        "/bin/rnx2rtkp",
-    ]
-    for c in candidates:
-        if os.path.exists(c) and os.access(c, os.X_OK):
-            return c
-    try:
-        for name in os.listdir("/usr/bin"):
-            if name == "rnx2rtkp":
-                return "/usr/bin/rnx2rtkp"
-    except Exception:
-        pass
-    st.sidebar.error("rnx2rtkp not found on PATH.")
-    st.sidebar.write("PATH:", os.environ.get("PATH", ""))
-    try:
-        st.sidebar.write("Contents of /usr/bin (head):", sorted(os.listdir("/usr/bin"))[:40])
-    except Exception as e:
-        st.sidebar.write("Could not list /usr/bin:", e)
-    for candidate in ("./bin/rnx2rtkp", "/app/bin/rnx2rtkp"):
-        if os.path.isfile(candidate):
-            st.sidebar.warning(
-                f"Found bundled rnx2rtkp at {candidate} but it will be ignored. "
-                "Remove it to avoid GLIBC issues."
-            )
     raise FileNotFoundError(
-        "rnx2rtkp not found. It should be installed by apt via packages.txt (package: rtklib)."
+        "rnx2rtkp not found. On Streamlit Cloud it should be installed via packages.txt (apt: rtklib). "
+        "If running locally, install RTKLIB and ensure rnx2rtkp is in PATH."
     )
 
-def save_upload(up, dirpath, name):
-    path = os.path.join(dirpath, name)
-    with open(path, "wb") as g:
-        g.write(up.getbuffer())
-    return path
+def _save_or_decompress(up, dest_path: str) -> str:
+    name = (up.name or "").lower()
+    data = up.getbuffer()
+    if name.endswith(".gz"):
+        import gzip
+        if dest_path.endswith(".gz"):
+            dest_path = dest_path[:-3]
+        with gzip.GzipFile(fileobj=io.BytesIO(data), mode="rb") as gzf:
+            payload = gzf.read()
+        with open(dest_path, "wb") as f:
+            f.write(payload)
+        return dest_path
+    with open(dest_path, "wb") as f:
+        f.write(data)
+    return dest_path
+
+def save_upload(up, dirpath, target_name) -> str:
+    if not up:
+        return ""
+    path = os.path.join(dirpath, target_name)
+    return _save_or_decompress(up, path)
 
 def run_rtk(rover_obs, base_obs, nav_file, out_pos, extra_args: Optional[List[str]] = None) -> Tuple[int, str]:
     exe = find_rnx2rtkp()
@@ -188,7 +163,7 @@ def run_rtk(rover_obs, base_obs, nav_file, out_pos, extra_args: Optional[List[st
     if base_obs:
         cmd += [base_obs]
     cmd += ["-o", out_pos]
-    st.write("**Command**")
+    st.write("RTKLIB command")
     st.code(" ".join(cmd))
     try:
         p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
@@ -196,9 +171,6 @@ def run_rtk(rover_obs, base_obs, nav_file, out_pos, extra_args: Optional[List[st
     except Exception as e:
         return 999, f"Failed to run rnx2rtkp: {e}"
 
-# ----------------------
-# .pos parser
-# ----------------------
 def parse_pos(path: str) -> pd.DataFrame:
     rows = []
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
@@ -211,15 +183,14 @@ def parse_pos(path: str) -> pd.DataFrame:
             t = parse_timestr(f"{parts[0]} {parts[1]}")
             idx = 2
             if t is None:
-                t = parse_timestr(parts[0])
-                idx = 1
+                t = parse_timestr(parts[0]); idx = 1
             if t is None:
                 continue
             try:
-                lat = float(parts[idx]); lon = float(parts[idx+1]); h = float(parts[idx+2])
+                lat = float(parts[idx]); lon = float(parts[idx + 1]); h = float(parts[idx + 2])
             except Exception:
                 continue
-            q = parts[idx+3] if len(parts) > idx+3 else ""
+            q = parts[idx + 3] if len(parts) > idx + 3 else ""
             rows.append((t, lat, lon, h, q))
     return pd.DataFrame(rows, columns=["time", "lat_deg", "lon_deg", "h_m", "Q"])
 
@@ -232,53 +203,63 @@ def nearest_idx(times: List[datetime], target: datetime) -> int:
             best_i, best_dt = i, dt
     return best_i
 
-# ----------------------
-# UI
-# ----------------------
 st.set_page_config(page_title="PPK with RTKLIB", layout="wide")
 st.title("PPK Processing (RTKLIB) — Camera positions")
+st.write("Upload files in the sidebar and click Run.")
 
 st.sidebar.header("Inputs")
-rov_up = st.sidebar.file_uploader("Rover RINEX OBS", type=["obs", "OBS", "rnx", "o"])
-base_up = st.sidebar.file_uploader("Base RINEX OBS (or VRS)", type=["obs", "OBS", "rnx", "o"])
-nav_up = st.sidebar.file_uploader("RINEX NAV (e.g., .nav/.n)", type=["nav", "NAV", "n"])
+rov_up    = st.sidebar.file_uploader("Rover RINEX (OBS)",              type=None)
+base_up   = st.sidebar.file_uploader("Base RINEX (OBS or VRS)",        type=None)
+nav_up    = st.sidebar.file_uploader("RINEX NAV (e.g., .nav/.n/.brdc)", type=None)
 events_up = st.sidebar.file_uploader("Events file (time, dN, dE, dU)", type=["txt", "csv"])
 
 st.sidebar.header("Settings")
-time_tol = st.sidebar.number_input(
-    "Time match tolerance (s)", min_value=0.01, max_value=5.0, value=2.00, step=0.01, format="%.2f"
-)
-gps_delay = st.sidebar.number_input(
-    "GPS delay (s)", min_value=-1.000, max_value=1.000, value=0.062, step=0.001, format="%.3f",
-)
-offset_mode = st.sidebar.radio(
-    "Offset meaning (apply to APC at each event):",
-    ("APC → Camera (add Δ)", "Camera → APC (subtract Δ)"),
-    index=0
-)
+time_tol = st.sidebar.number_input("Time match tolerance (s)", min_value=0.01, max_value=5.0, value=2.00, step=0.01, format="%.2f")
+gps_delay = st.sidebar.number_input("GPS delay (s)", min_value=-1.000, max_value=1.000, value=0.062, step=0.001, format="%.3f",
+                                    help="Logger timestamp earlier than exposure; delay is added to event time.")
+offset_mode = st.sidebar.radio("Offset meaning (apply to APC at each event):",
+                               ("APC → Camera (add Δ)", "Camera → APC (subtract Δ)"), index=0)
 mode_add = (offset_mode == "APC → Camera (add Δ)")
+
+st.sidebar.header("Base override (optional)")
+use_base_override = st.sidebar.checkbox("Override base station coordinates (LLH)")
+base_lat = base_lon = base_h = 0.0
+if use_base_override:
+    base_lat = st.sidebar.number_input("Base lat (deg, +N / -S)", value=0.0, step=0.000001, format="%.6f")
+    base_lon = st.sidebar.number_input("Base lon (deg, +E / -W)", value=0.0, step=0.000001, format="%.6f")
+    base_h   = st.sidebar.number_input("Base ellipsoid height (m)", value=0.0, step=0.01, format="%.2f")
 
 run_btn = st.sidebar.button("Run PPK + Build CSV")
 
-for cand in ("./bin/rnx2rtkp", "/app/bin/rnx2rtkp"):
-    if os.path.isfile(cand):
-        st.sidebar.warning(
-            f"Bundled rnx2rtkp found at {cand}. It will NOT be used. "
-            "Please remove it from the repo to avoid GLIBC errors."
-        )
-
 if run_btn:
     if not (rov_up and events_up):
-        st.error("Please provide at least Rover OBS and Events file.")
+        st.error("Please provide at least Rover RINEX and Events file.")
         st.stop()
 
     with tempfile.TemporaryDirectory() as td:
         rover_path = save_upload(rov_up, td, "rover.obs")
-        base_path = save_upload(base_up, td, "base.obs") if base_up else ""
-        nav_path  = save_upload(nav_up,  td, "eph.nav")  if nav_up  else ""
+        base_path  = save_upload(base_up, td, "base.obs") if base_up else ""
+        nav_path   = save_upload(nav_up,  td, "eph.nav")  if nav_up  else ""
+
+        extra_args = None
+        if use_base_override:
+            if not (-90.0 <= base_lat <= 90.0) or not (-180.0 <= base_lon <= 180.0):
+                st.error("Base LLH out of range. Latitude must be [-90,90], longitude [-180,180].")
+                st.stop()
+            opt_lines = [
+                "ant1-postype = rinexhead",
+                "ant2-postype = llh",
+                f"ant2-pos1 = {base_lat:.10f}",
+                f"ant2-pos2 = {base_lon:.10f}",
+                f"ant2-pos3 = {base_h:.4f}",
+            ]
+            opt_path = os.path.join(td, "rtklib_override.conf")
+            with open(opt_path, "w", encoding="utf-8") as cfg:
+                cfg.write("\n".join(opt_lines) + "\n")
+            extra_args = ["-k", opt_path]
 
         pos_path = os.path.join(td, "solution.pos")
-        rc, out = run_rtk(rover_path, base_path, nav_path, pos_path, extra_args=None)
+        rc, out = run_rtk(rover_path, base_path, nav_path, pos_path, extra_args=extra_args)
 
         with st.expander("RTKLIB stdout / stderr"):
             st.code(out)
@@ -313,16 +294,9 @@ if run_btn:
             out_rows.append({
                 "time_utc": ev.t.isoformat().replace("+00:00", "Z"),
                 "match_dt_s": round(dt, 3),
-                "apc_lat_deg": lat,
-                "apc_lon_deg": lon,
-                "apc_h_m":    h,
-                "Q": q,
-                "dN_m": ev.dN,
-                "dE_m": ev.dE,
-                "dU_m": ev.dU,
-                "cam_lat_deg": cam_lat,
-                "cam_lon_deg": cam_lon,
-                "cam_h_m": cam_h
+                "apc_lat_deg": lat, "apc_lon_deg": lon, "apc_h_m": h, "Q": q,
+                "dN_m": ev.dN, "dE_m": ev.dE, "dU_m": ev.dU,
+                "cam_lat_deg": cam_lat, "cam_lon_deg": cam_lon, "cam_h_m": cam_h,
             })
 
         if not out_rows:
@@ -335,14 +309,15 @@ if run_btn:
 
         st.subheader("Camera CSV (lat/lon degrees, height meters)")
         st.dataframe(csv_camera, use_container_width=True)
-
-        cam_bytes = csv_camera.to_csv(index=False).encode()
-        st.download_button("Download camera_positions.csv", cam_bytes, file_name="camera_positions.csv", mime="text/csv")
+        st.download_button("Download camera_positions.csv",
+                           csv_camera.to_csv(index=False).encode(),
+                           file_name="camera_positions.csv", mime="text/csv")
 
         with st.expander("Full matched table (with APC, offsets, quality)"):
             st.dataframe(csv_full, use_container_width=True)
-            full_bytes = csv_full.to_csv(index=False).encode()
-            st.download_button("Download full_results.csv", full_bytes, file_name="full_results.csv", mime="text/csv")
+            st.download_button("Download full_results.csv",
+                               csv_full.to_csv(index=False).encode(),
+                               file_name="full_results.csv", mime="text/csv")
 else:
-    st.write("Upload files in the sidebar and click **Run PPK + Build CSV**.")
-    st.caption("On Streamlit Cloud, the system RTKLIB (rnx2rtkp) is installed via packages.txt (apt: rtklib).")
+    st.caption("On Streamlit Cloud, RTKLIB (rnx2rtkp) is installed via packages.txt (apt: rtklib).")
+
