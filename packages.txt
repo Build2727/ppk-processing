@@ -2,3 +2,5 @@ build-essential
 git
 ca-certificates
 libatlas-base-dev
+
+libstdc++6
