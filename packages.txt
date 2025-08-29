@@ -1,4 +1,4 @@
-rtklib
 build-essential
 git
 ca-certificates
+libatlas-base-dev
