@@ -1,5 +1,6 @@
 build-essential
 git
+rtklib
 libatlas-base-dev
 libstdc++6
 ca-certificates
