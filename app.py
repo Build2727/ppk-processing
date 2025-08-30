@@ -178,49 +178,54 @@ def run_rnx2rtkp(rover_obs: str, base_obs: str, base_nav: str, out_pos_path: str
                 n_epochs += 1
     return (" ".join(cmd), out, n_epochs)
 
-def parse_rtklib_pos(pos_path: str) -> pd.DataFrame:
+def parse_events_no_headers(file_path: str) -> pd.DataFrame:
     """
-    Parse RTKLIB .pos; extract GPS week, TOW, lat, lon, hgt.
+    Parse events TXT/CSV with NO headers.
+    Expected columns (we use the first 9):
+      1: Image
+      2: GPS TOW (seconds)
+      3: GPS week
+      4: North offset (m)
+      5: East  offset (m)
+      6: Up    offset (m)
+      7: Roll (deg)
+      8: Pitch (deg)
+      9: Yaw  (deg)
+    Accepts comma- or whitespace-separated values; ignores blank/comment lines.
     """
+    if not os.path.exists(file_path):
+        return pd.DataFrame(columns=[
+            "image","gps_tow_s","gps_week","North_m","East_m","Up_m",
+            "Roll_deg","Pitch_deg","Yaw_deg"
+        ])
+
     rows = []
-    if not os.path.exists(pos_path):
-        return pd.DataFrame()
-    with open(pos_path, "r", errors="ignore") as f:
+    with open(file_path, "r", errors="ignore") as f:
         for raw in f:
-            s = raw.strip()
-            if not s or s.startswith("%"):
+            line = raw.strip()
+            if not line or line.startswith("#"):
                 continue
-            parts = s.split()
+            # allow both comma and whitespace
+            parts = [p.strip() for p in line.replace("\t", " ").replace(",", " ").split()]
+            if len(parts) < 9:
+                continue
+            img = parts[0]
             try:
-                _ = [float(x) for x in parts[:8]]
-            except ValueError:
+                tow   = float(parts[1])
+                week  = int(float(parts[2]))
+                north = float(parts[3])
+                east  = float(parts[4])
+                up    = float(parts[5])
+                roll  = float(parts[6])
+                pitch = float(parts[7])
+                yaw   = float(parts[8])
+            except Exception:
                 continue
-            lat_idx = lon_idx = hgt_idx = None
-            for i in range(len(parts) - 2):
-                try:
-                    v = float(parts[i]); v2 = float(parts[i + 1]); v3 = float(parts[i + 2])
-                except Exception:
-                    continue
-                if -90 <= v <= 90 and -180 <= v2 <= 180:
-                    lat_idx, lon_idx, hgt_idx = i, i + 1, i + 2
-                    break
-            week = tow = None
-            for i in range(min(4, len(parts) - 1)):
-                try:
-                    w = int(float(parts[i])); t = float(parts[i + 1])
-                    if 800 <= w <= 4000 and 0 <= t < 700000:
-                        week, tow = w, t
-                        break
-                except Exception:
-                    continue
-            if None not in (lat_idx, lon_idx, hgt_idx, week, tow):
-                try:
-                    lat = float(parts[lat_idx]); lon = float(parts[lon_idx]); hgt = float(parts[hgt_idx])
-                except Exception:
-                    continue
-                rows.append((week, tow, lat, lon, hgt))
-    return pd.DataFrame(rows, columns=["gps_week", "gps_tow_s", "lat_deg", "lon_deg", "hgt_m"])
-# ------------------------------
+            rows.append((img, tow, week, north, east, up, roll, pitch, yaw))
+
+    return pd.DataFrame(rows, columns=[
+        "image","gps_tow_s","gps_week","North_m","East_m","Up_m",
+        "Roll_deg","Pitch_deg","Yaw_deg"# ------------------------------
 # UI
 # ------------------------------
 st.title("Jamie D PPK Processor")
