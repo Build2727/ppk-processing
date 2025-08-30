@@ -223,9 +223,9 @@ def parse_events_no_headers(file_path: str) -> pd.DataFrame:
                 continue
             rows.append((img, tow, week, north, east, up, roll, pitch, yaw))
 
-    return pd.DataFrame(rows, columns=[
-        "image","gps_tow_s","gps_week","North_m","East_m","Up_m",
-        "Roll_deg","Pitch_deg","Yaw_deg"# ------------------------------
+    return pd.DataFrame(rows, columns=["image","gps_tow_s","gps_week","North_m","East_m","Up_m",
+        "Roll_deg","Pitch_deg","Yaw_deg"])
+#-------------------------------
 # UI
 # ------------------------------
 st.title("Jamie D PPK Processor")
