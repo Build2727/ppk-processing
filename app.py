@@ -31,9 +31,6 @@ st.markdown("""
 # ------------------------------
 # RTKLIB bootstrap
 # ------------------------------
-# ------------------------------
-# RTKLIB bootstrap
-# ------------------------------
 def ensure_rnx2rtkp() -> str:
     p = shutil.which("rnx2rtkp")
     if p:
@@ -84,7 +81,6 @@ def ensure_rnx2rtkp() -> str:
 
     os.environ["PATH"] = f"{str(home_bin)}:{os.environ.get('PATH','')}"
     return str(built)
-
 
 # ------------------------------
 # Geodesy (WGS84)
