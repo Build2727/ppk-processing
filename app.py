@@ -425,8 +425,8 @@ def match_events_to_pos(pos_df: pd.DataFrame,
             base_lat, base_lon, base_h = base
 
             n = float(ev["North_m"]); e = float(ev["East_m"]); u = float(ev["Up_m"])
-                            dN, dE, dU = +n, +e, -u
-                            mode_label = "Sony convention: APC +N, +E, −U"
+            dN, dE, dU = +n, +e, -u
+            mode_label = "Sony convention: APC +N, +E, −U"
 
             (adj_lat, adj_lon, adj_h), _, _ = apply_offsets_via_ecef(base_lat, base_lon, base_h, dN, dE, dU)
 
