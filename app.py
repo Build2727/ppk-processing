@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import shutil
+import pathlib
 
 # ------------------------------
 # Page setup + style
@@ -109,9 +110,11 @@ def ecef_to_geodetic(X: float, Y: float, Z: float):
         h = p / math.cos(lat) - N
         lat_new = math.atan2(Z, p * (1.0 - WGS84_E2 * (N / (N + h))))
         if abs(lat_new - lat) < 1e-13:
-            lat = lat_new; break
+            lat = lat_new
+            break
         lat = lat_new
-    sL = math.sin(lat); N = WGS84_A / math.sqrt(1.0 - WGS84_E2 * sL * sL)
+    sL = math.sin(lat)
+    N = WGS84_A / math.sqrt(1.0 - WGS84_E2 * sL * sL)
     h = p / math.cos(lat) - N
     return math.degrees(lat), math.degrees(lon), h
 
@@ -124,8 +127,11 @@ def enu_basis(lat_deg: float, lon_deg: float):
     u = (cL * cO, cL * sO, sL)
     return e, n, u
 
-def add_vec(a, b):  return (a[0]+b[0], a[1]+b[1], a[2]+b[2])
-def scale_vec(v, s): return (v[0]*s, v[1]*s, v[2]*s)
+def add_vec(a, b):
+    return (a[0]+b[0], a[1]+b[1], a[2]+b[2])
+
+def scale_vec(v, s):
+    return (v[0]*s, v[1]*s, v[2]*s)
 
 def apply_offsets_via_ecef(lat_deg: float, lon_deg: float, h_m: float,
                            dN_m: float, dE_m: float, dU_m: float):
@@ -214,7 +220,6 @@ def parse_rtklib_pos(pos_path: str) -> pd.DataFrame:
                     continue
                 rows.append((week, tow, lat, lon, hgt))
     return pd.DataFrame(rows, columns=["gps_week", "gps_tow_s", "lat_deg", "lon_deg", "hgt_m"])
-
 # ------------------------------
 # UI
 # ------------------------------
