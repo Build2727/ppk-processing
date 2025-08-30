@@ -177,6 +177,51 @@ def run_rnx2rtkp(rover_obs: str, base_obs: str, base_nav: str, out_pos_path: str
                     continue
                 n_epochs += 1
     return (" ".join(cmd), out, n_epochs)
+def parse_rtklib_pos(pos_path: str) -> pd.DataFrame:
+    """
+    Parse an RTKLIB .pos file and extract:
+    GPS week, TOW (s), latitude (deg), longitude (deg), height (m).
+    """
+    rows = []
+    if not os.path.exists(pos_path):
+        return pd.DataFrame()
+
+    with open(pos_path, "r", errors="ignore") as f:
+        for raw in f:
+            s = raw.strip()
+            if not s or s.startswith("%"):
+                continue
+            parts = s.split()
+
+            # Find GPS week + TOW near the start
+            week, tow = None, None
+            for i in range(min(4, len(parts) - 1)):
+                try:
+                    w = int(float(parts[i]))
+                    t = float(parts[i + 1])
+                    if 800 <= w <= 4000 and 0 <= t < 700000:
+                        week, tow = w, t
+                        break
+                except Exception:
+                    continue
+
+            # Find lat/lon/height later in the row
+            lat = lon = hgt = None
+            for i in range(len(parts) - 2):
+                try:
+                    v1 = float(parts[i])
+                    v2 = float(parts[i + 1])
+                    v3 = float(parts[i + 2])
+                except Exception:
+                    continue
+                if -90 <= v1 <= 90 and -180 <= v2 <= 180:
+                    lat, lon, hgt = v1, v2, v3
+                    break
+
+            if None not in (week, tow, lat, lon, hgt):
+                rows.append((week, tow, lat, lon, hgt))
+
+    return pd.DataFrame(rows, columns=["gps_week", "gps_tow_s", "lat_deg", "lon_deg", "hgt_m"])
 
 def parse_events_no_headers(file_path: str) -> pd.DataFrame:
     """
@@ -464,6 +509,7 @@ if not st.session_state["pos_df"].empty and not st.session_state["events_df"].em
         csv_cols = ["Img","Lat","Long","Alt","Yaw","Pitch","Roll","X acc","Y acc","Z acc"]
         csv_bytes = out_df[csv_cols].to_csv(index=False, float_format="%.7f").encode("utf-8")
         st.download_button("Download EXIF CSV", csv_bytes, "exif_ppk.csv", "text/csv")
+
 else:
     if st.session_state["pos_df"].empty:
         st.info("Run PPK first to create a .pos.")
